@@ -1,64 +1,98 @@
 const express = require('express');
 const passport = require('passport');
 const GitHubStrategy = require('passport-github').Strategy;
+// const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const session = require('express-session');
+const bodyParser = require('body-parser');
+var db = require('./db');
+const app = express();
 
-var session = require('express-session');
-var bodyParser = require('body-parser');
-
-const GITClientID = process.env.GITCLIENTID;
-const GITClientSecret = process.env.GITSECRET;
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(session({
+	secret: 'thisissosecretyup',
+	resave: false,
+	saveUninitialized: false,
+	secure: false
+}));
 
 passport.use(
 	new GitHubStrategy({
-		clientID: GITClientID,
-		clientSecret: GITClientSecret,
+		clientID: process.env.GITCLIENTID,
+		clientSecret: process.env.GITSECRET,
 		callbackURL: "http://localhost:3000/auth/github/callback"
 	}, function(accessToken, refreshToken, profile, done) {
-		console.log(accessToken);
-		console.log(refreshToken);
+		console.log("passport use callback");
+		console.log("accesstoken", accessToken);
+		console.log("refresh token", refreshToken);
 		done (null, profile);
 	}));
 
-
-// Passport session setup.
-//	 To support persistent login sessions, Passport needs to be able to
-//	 serialize users into and deserialize users out of the session.	 Typically,
-//	 this will be as simple as storing the user ID when serializing, and finding
-//	 the user by ID when deserializing.	 However, since this example does not
-//	 have a database of user records, the complete GitHub profile is serialized
-//	 and deserialized.
 passport.serializeUser(function(user, done) {
-	done(null, user);
+	console.log('serializeUser');
+
+	db.findUser(user.username, 'github', (err, user) => {
+		console.log('serializing as' + user.id);
+		done(null, user.id);
+	});
 });
 
-passport.deserializeUser(function(obj, done) {
-	done(null, obj);
+passport.deserializeUser(function(id, done) {
+	console.log("deserializeUser", id);
+	db.findUserById(id, (err, user) => {
+		done(null, user);
+	});
 });
 
-
-const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json());
-app.use(session({ secret: 'keyboard cat', resave: false, saveUninitialized: false }));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
 
+function ensureAuthenticated(req, res, next) {
+	if (req.isAuthenticated()) {
+		console.log('is authed');
+		// req.user is available for use here
+		return next();
+	}
+	console.log('was not authed');
+	// denied. redirect to login
+	res.redirect('/?nope=nope_not_logged_in');
+}
+
 app.get('/auth/git',
 	passport.authenticate('github', { scope: [ 'user:email' ] }));
 
-app.get('/auth/github/callback',
+app.get(
+	'/auth/github/callback',
 	passport.authenticate('github', { failureRedirect: '/login' }),
 	function(req, res) {
-		// Successful authentication, redirect home.
-		res.redirect('/?auth=goodasauth');
-	});
+		console.log('auth callback finding user');
+		db.findOrCreateUser(req.user.username, req.user.email, 'github', (user) => {
+			// Successful authentication, redirect home.
+			res.redirect('/?auth=goodasauth&userid=' + user.id);
+		});
+	}
+);
 
+app.get(
+	'/needs-login',
+	ensureAuthenticated,
+	(req, res) => {
+		res.send('you is loggeeded in as: ' + req.user.username);
+	}
+);
 
+app.get(
+	'/',
+	(req, res) => {
+		res.send(`you is home in
+			 <ul>
+				 <li><a href="/auth/git">do git auth</a></li>
+				 <li><a href="/needs-login">check login</a></li>
+			 </ul>
+		 `);
+	}
+);
 
-app.get('/', (req, res) => {
-	res.send('<a href="/auth/git">git auth</a>');
-});
-
-app.listen(3000, () => console.log('Example app listening on port 3000!'));
+app.listen(process.env.PORT, () => console.log('Example app listening on port ' + process.env.PORT));
